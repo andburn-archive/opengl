@@ -160,3 +160,92 @@ Fragment shaders interpolate all its inputs across the fragments that it generat
 If we send this new vertex color to the fragment shader and use it as output we see a spectrum of colors on our triangle. From the defined vertex colors on the tree vertices of the triangle, the shader produces a linear interpolation based on the generated fragments location in relation to the specified vertices. For example 10% blue, 90% green, 0% red.
 
 See the [code](Shaders/shader.h) for a method to load shaders from text files, rather than inserting strings into the C program.
+
+### Textures
+
+Textures are images applied to a 3D object to give it a realistic look. In order to map a texture to an object each vertex needs a *texture coordinate* that specifies what part of the image it should sample from. Fragment interpolation will fill in the rest, in a similar way to the vertex colours in the previous section.
+
+Texture coordinates range from *0* to *1* across the 2D plane with the origin at the bottom left. The actual sampling of the texture using these coordinates can be done in a number of ways. The main options for controlling this are *texture wrapping* and *texture filtering*.
+
+#### Texture Wrapping
+
+When the texture coordinates are given outside the 0-1 range the default behavior is to repeat the image in the appropriate direction `GL_REPEAT`. Other wrapping options are `GL_MIRRORED_REPEAT` (like repeat buy alternately mirrored), `GL_CLAMP_TO_EDGE` (clamped to 0,1 gives a stretched edge) and `GL_CLAMP_TO_BORDER` (coordinates outside the range are given a defined color). The wrapping options can be set per axis *s* and *t* (equivalent to *x* & *y*) using the `glTexParameter*` function.
+
+```c
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+```
+
+The first argument specifies the texture target, 2D textures in this case (1D and 3D textures also exist). Second argument defines the axis we are setting the wrapping for. The last argument is the wrapping type we want to apply.
+
+#### Texture Filtering
+
+Texture coordinates don't depend on texture resolution, but can have any floating point value. OpenGL needs to map a texture pixel (texel) to a texture coordinate, like wrapping there are a number of ways to determine the pixel to use. This is mainly of concern when applying low resolutions textures onto large 3D objects. There are two main options, nearest neighbor `GL_NEAREST` selects the pixel whose centre is closest to the coordinate. Bilinear filtering `GL_LINEAR` creates a linear interpolation between all the pixels around the coordinate based on distance. `GL_NEAREST` results in a sharp but blocky image, where as `GL_LINEAR` is more smooth, but inclined to have a blurred look.
+
+The filtering can be set for *magnifying* and *minifying* operations i.e. scaling up or down. We use `glTexParameter` again to set the filtering.
+
+```c
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+```
+
+In a 3D scene it makes no sense to have object in the distance using the same high resolution textures the an object in the foreground close to the camera uses. It wastes memory and can also produce artifacts on the distance objects, as they are so small compared to texture applied to them. 
+
+A solution is to use *mipmaps*, which are a series of texture images each half the size of the previous one. Then based on the distance of an object from the camera we can select an appropriately sized *mipmap*. OpenGL can generate *mipmaps* for you based on an existing texture with `glGenerateMipmaps(GL_TEXTURE_2D)`.
+
+To use *mipmaps* we set the minifying filter to one of the four *mipmap* filters `GL_NEAREST_MIPMAP_NEAREST`, `GL_NEAREST_MIPMAP_LINEAR`, `GL_LINEAR_MIPMAP_NEAREST` and `GL_LINEAR_MIPMAP_LINEAR`. Using a *mipmap* filter for magnifying will do nothing, and generate an error code.
+
+```c
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+```
+
+#### Loading & Creating Textures
+
+Firstly, the texture image needs to be loaded into your program. A popular choice is the `stb_image.h` [library](https://github.com/nothings/stb/blob/master/stb_image.h).
+
+To load the image with `stbi_load` with arguments for file location and int references to store width, height and number of channels of the image.
+
+```c
+int width, height, nrChannels;
+unsigned char *data = stbi_load("container.jpg", &width, &height, &nrChannels, 0); 
+```
+
+To create the texture we need to declare it with an ID, like we did with Buffers or any other OpenGL objects.
+
+```c
+unsigned int texture;
+glGenTextures(1, &texture); // arg is number of textures to gen
+glBindTexture(GL_TEXTURE_2D, texture);
+```
+
+To generate a texture from the image we use `glTexImage2D`.
+
+```c
+glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+```
+
+The second arg defines the *mipmap* level in this case its the base level `0`. The last three args are the image format, datatype and image data respectively. The *mipmap* levels can be specified manually with a call to `glTexImage2D` for each level. As mentioned before we can alternatively auto generate the *mipmaps* with `glGenerateMipmap(GL_TEXTURE_2D)`.
+
+We need to add the texture coordinates to our set of vertex attributes and update our attribute pointers to read the new values correctly. New input and ouput variables are added to the vertex shader to send the tex coords to the fragment shader. The actual texture object is referenced in the fragment shader as a `Sampler2D` *uniform* (3D or 1D also possible). The actual sampling takes place with the `texture(texture1, coords1)` function.
+
+```glsl
+out vec4 FragColor;
+  
+in vec3 ourColor;
+in vec2 TexCoord;
+
+uniform sampler2D ourTexture;
+
+void main()
+{
+    FragColor = texture(ourTexture, TexCoord);
+}
+```
+
+By default (with most drivers) the location of a single texture is handled by OpenGL, so we don't have to specify a value to the `Sampler2D` uniform. However, if we want multiple textures to be available to the fragment shader the locations must be defined. This location is known as a *texture unit*, there is a minimum of 16 (0 to 15). To set the location:
+  - set the active texture unit `glActiveTextureUnit(GL_TEXTURE0)`
+  - then bind a texture object to the active texture unit `glBindTexture(GL_TEXTURE_2D, texture)`
+  - finally set the uniform `glUniform1i(glGetUniformLocation(shader.ID, "texture"), 0)`
+
+OpenGL expects the zero coordinate of the y-axis to be on the bottom side of an image, where most images have zero at the top of the y-axis. `stb_image.h` can flip images on load by calling `stbi_set_flip_vertically_on_load(true)`.
